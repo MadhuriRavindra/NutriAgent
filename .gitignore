@@ -1,0 +1,26 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# ChromaDB / generated vector database
+chroma_db/
+
+# Google ADK local files
+.adk/
+
+# IDE
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+interview.md
