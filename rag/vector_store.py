@@ -3,18 +3,30 @@ rag/vector_store.py
 Builds embeddings from data/raw_recipes_clean.json and stores them in a
 persistent ChromaDB collection, ready for semantic search with metadata
 filtering (cuisine, organic-safe, section) and health substitution tips.
+
+Also exposes ensure_vector_store(), which the Streamlit app calls on
+startup: if the collection is missing or empty (e.g. a fresh Streamlit
+Cloud container), it builds it once from the JSON data.
 """
 
 import json
 from pathlib import Path
 
 import chromadb
-from sentence_transformers import SentenceTransformer
+
+# Absolute paths worked out from THIS file's location
+# (rag/vector_store.py -> parent = rag/ -> parent.parent = project root),
+# so they work no matter which folder the app is launched from.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PERSIST_PATH = str(PROJECT_ROOT / "chroma_db")
+DATA_PATH = str(PROJECT_ROOT / "data" / "raw_recipes_clean.json")
+COLLECTION_NAME = "recipes"
 
 # Small, fast, local - no API key needed. First run downloads (~80MB), then cached.
-EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 
 ALL_SECTIONS = ["breakfast", "dal", "curry", "rice", "paneer", "snacks", "sweets", "roti"]
+
 
 def build_chunk_text(recipe: dict) -> str:
     """
@@ -62,17 +74,28 @@ def build_metadata(recipe: dict) -> dict:
     return metadata
 
 
-def get_chroma_collection(persist_path: str = "chroma_db", name: str = "recipes"):
-    client = chromadb.PersistentClient(path=persist_path)
-    return client.get_or_create_collection(name=name)
+def build_vector_store(in_path: str = DATA_PATH,
+                       persist_path: str = PERSIST_PATH) -> None:
+    """
+    Full rebuild: drops the old collection and re-embeds every recipe.
 
+    Why drop instead of upsert? ids are 'recipe_<position>', so if a re-scrape
+    produces FEWER recipes than last time, upsert would overwrite the first N
+    and leave stale entries beyond N sitting in the store. Deleting first
+    guarantees the store exactly matches the current JSON.
+    """
+    # Imported here, not at module top, so ensure_vector_store() can check
+    # the store without loading the model when no build is needed.
+    from sentence_transformers import SentenceTransformer
 
-def build_vector_store(in_path: str = "data/raw_recipes_clean.json",
-                        persist_path: str = "chroma_db") -> None:
     with open(in_path, encoding="utf-8") as f:
         recipes = json.load(f)
 
-    collection = get_chroma_collection(persist_path)
+    client = chromadb.PersistentClient(path=persist_path)
+    existing = [c.name for c in client.list_collections()]
+    if COLLECTION_NAME in existing:
+        client.delete_collection(COLLECTION_NAME)
+    collection = client.create_collection(name=COLLECTION_NAME)
 
     texts, metadatas, ids = [], [], []
     for i, recipe in enumerate(recipes):
@@ -81,17 +104,34 @@ def build_vector_store(in_path: str = "data/raw_recipes_clean.json",
         ids.append(f"recipe_{i}")
 
     print(f"Embedding {len(texts)} recipes...")
-    embeddings = EMBED_MODEL.encode(texts, show_progress_bar=True).tolist()
+    model = SentenceTransformer(EMBED_MODEL_NAME)
+    embeddings = model.encode(texts, show_progress_bar=True).tolist()
 
-    # upsert (not add) - safe to re-run after re-scraping/re-tagging
-    # without duplicate entries, since ids are stable by list position.
-    collection.upsert(
+    collection.add(
         ids=ids,
         embeddings=embeddings,
         documents=texts,
         metadatas=metadatas,
     )
     print(f"Stored {collection.count()} recipes in ChromaDB at '{persist_path}'")
+
+
+def ensure_vector_store(persist_path: str = PERSIST_PATH) -> int:
+    """
+    Called by the app on startup. Builds the store only if the collection
+    is missing or empty; otherwise does nothing. Returns the recipe count.
+    """
+    client = chromadb.PersistentClient(path=persist_path)
+    existing = [c.name for c in client.list_collections()]
+
+    if COLLECTION_NAME in existing:
+        count = client.get_collection(COLLECTION_NAME).count()
+        if count > 0:
+            return count
+
+    print("Recipe vector store missing or empty - building it now...")
+    build_vector_store(persist_path=persist_path)
+    return chromadb.PersistentClient(path=persist_path).get_collection(COLLECTION_NAME).count()
 
 
 if __name__ == "__main__":

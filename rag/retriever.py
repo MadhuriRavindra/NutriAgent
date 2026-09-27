@@ -5,20 +5,45 @@ combining semantic search (embedding similarity) with metadata filters
 (cuisine, meal section, organic-safety).
 """
 
+from functools import lru_cache
+from pathlib import Path
+
 import chromadb
 from sentence_transformers import SentenceTransformer
 
 EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
 
+# Absolute path to <project root>/chroma_db, worked out from THIS file's
+# location (rag/retriever.py -> parent = rag/ -> parent.parent = project root).
+# A plain relative "chroma_db" depends on the folder the app was launched
+# from, which differs between local runs and Streamlit Cloud.
+PERSIST_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
+COLLECTION_NAME = "recipes"
 
-def get_chroma_collection(persist_path: str = "chroma_db", name: str = "recipes"):
+
+@lru_cache(maxsize=1)
+def get_chroma_collection(persist_path: str = PERSIST_PATH,
+                          name: str = COLLECTION_NAME):
+    """
+    Opens the persistent Chroma collection once and caches it, so every
+    query reuses the same client instead of reopening the database.
+    """
     client = chromadb.PersistentClient(path=persist_path)
-    return client.get_collection(name)
+    try:
+        return client.get_collection(name)
+    except Exception as e:
+        existing = [c.name for c in client.list_collections()]
+        raise RuntimeError(
+            f"Chroma collection '{name}' not found at '{persist_path}'. "
+            f"Collections present: {existing or 'none'}. "
+            f"Run rag/vector_store.py to build it, or make sure chroma_db/ "
+            f"is committed to the repo."
+        ) from e
 
 
 def build_where_filter(cuisine: str | None = None,
-                        section: str | None = None,
-                        organic_only: bool = False) -> dict | None:
+                       section: str | None = None,
+                       organic_only: bool = False) -> dict | None:
     """
     Builds a ChromaDB 'where' clause from whichever filters are active.
     Each condition here is an EXACT match on pre-computed metadata -
@@ -31,10 +56,10 @@ def build_where_filter(cuisine: str | None = None,
         conditions.append({"cuisine": cuisine})
 
     if section:
-        # 'sections' is stored as a comma-joined string (e.g. "breakfast, snacks")
-        # because Chroma metadata can't hold lists - so this is a substring
-        # match, not exact equality.
-        conditions.append({f"is_{section}": True})   # exact-match boolean, not $contains
+        # Chroma metadata can't hold lists, and $contains only works on
+        # document text - so each section was stored as its own boolean
+        # field at ingestion (is_breakfast, is_dal, ...). Exact match here.
+        conditions.append({f"is_{section}": True})
 
     if organic_only:
         conditions.append({"is_organic_safe": True})
@@ -47,11 +72,11 @@ def build_where_filter(cuisine: str | None = None,
 
 
 def search_recipes(query: str,
-                    k: int = 3,
-                    cuisine: str | None = None,
-                    section: str | None = None,
-                    organic_only: bool = False,
-                    persist_path: str = "chroma_db") -> list[dict]:
+                   k: int = 3,
+                   cuisine: str | None = None,
+                   section: str | None = None,
+                   organic_only: bool = False,
+                   persist_path: str = PERSIST_PATH) -> list[dict]:
     """
     query        -> embedded and compared by meaning (semantic search)
     cuisine/section/organic_only -> applied as exact metadata filters,
@@ -98,6 +123,7 @@ def search_recipes(query: str,
 
 if __name__ == "__main__":
     # Quick manual test - mirrors the interview example: "healthy south indian breakfast"
+    print(f"Using Chroma at: {PERSIST_PATH}\n")
     results = search_recipes(
         query="healthy south indian breakfast",
         k=5,
