@@ -1,6 +1,35 @@
+# NutriRecipe Vegetarien - Python dependencies
+#
+# IMPORTANT: install the CPU-only PyTorch build FIRST, otherwise
+# sentence-transformers pulls the full CUDA stack (several GB):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+
+# --- Agent orchestration & LLM ---
 langgraph
-langchain-google-genai
+langchain
 langchain-core
-python-dotenv
-chromadb
 langchain-groq
+
+# --- RAG: embeddings & vector store ---
+sentence-transformers
+chromadb
+
+# --- Web scraping ---
+requests
+beautifulsoup4
+
+# --- Frontend ---
+streamlit
+
+# --- Backend API ---
+fastapi
+uvicorn[standard]
+pydantic
+
+# --- Config / secrets (.env with GROQ_API_KEY) ---
+python-dotenv
+
+# --- YouTube recipe agent (Google ADK + Groq via LiteLLM) ---
+google-adk
+litellm
